@@ -3,10 +3,10 @@ import socket
 ip = "192.168.1.150"
 port = 9100
 
-# ===== Datos dinámicos =====
-barcode_value = "123456789"
-rfid_text = "123456789ABCDEFG"          
-label_text = "R1ID_DEV_2"             
+barcode_value = "A00281-25"
+rfid_text = "A0028125"          
+# rfid_text = "123456789ABC"          
+label_text = ""             
 
 # Convertir texto a HEX para EPC (12 bytes = 24 hex chars)
 rfid_hex = rfid_text.encode("ascii").hex().upper()
