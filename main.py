@@ -24,9 +24,9 @@ PRINTER_PORT = 9100
 # Configuración de la base de datos Firebird
 FIREBIRD_CONFIG = {
     "host": "localhost",
-    "database": "C:/laragon/www/amparv3/bd/AMPARJUL.FDB",  # Cambia esta ruta
+    "database": "C:/laragon/www/amparv3/bd/AMPARJUL.FDB",  
     "user": "SYSDBA",
-    "password": "masterkey",  # Cambia la contraseña
+    "password": "masterkey",  
     "charset": "UTF8",
 }
 
