@@ -4,6 +4,7 @@ Microservicio para impresión de etiquetas RFID - Printronix AUTO ID T820
 
 import socket
 import asyncio
+import base64
 from typing import List
 from contextlib import asynccontextmanager
 
@@ -29,6 +30,9 @@ FIREBIRD_CONFIG = {
     "password": "masterkey",  
     "charset": "UTF8",
 }
+
+# URL base para el QR
+QR_BASE_URL = "http://b8ff0b49f137.sn.mynetname.net:81/amparv3/gui/remisiones.carrito.php?stockid="
 
 # Delay entre impresiones (segundos)
 PRINT_DELAY = 0.5
@@ -91,7 +95,7 @@ def get_db_connection():
 
 def buscar_folio_en_db(folio: str) -> dict | None:
     """
-    Busca un folio en la tabla AMPAR_HIS_STOCK
+    Busca un folio en la tabla AMPAR_HIS_STOCK con toda la información relacionada
     
     Args:
         folio: El folio a buscar (con guión, ej: 'A00219-25')
@@ -102,11 +106,38 @@ def buscar_folio_en_db(folio: str) -> dict | None:
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        # Buscar el folio en la base de datos
-        cursor.execute(
-            "SELECT * FROM AMPAR_HIS_STOCK WHERE STOCK_FOLIO = ?",
-            (folio,)
-        )
+        # Consulta directa desde STOCK usando STOCK_ESDETID y STOCK_ALMACENIDACTUAL
+        sql = """
+            SELECT 
+                ST.STOCK_ID,
+                ST.STOCK_FOLIO,
+                ST.STOCK_LOTE,
+                ST.STOCK_CADUCIDAD,
+                ST.STOCK_ESDETID,
+                ST.STOCK_ALMACENIDACTUAL,
+                ED.ESDET_LOTE,
+                ED.ESDET_CADUCIDAD,
+                ED.ESDET_SERIE,
+                ED.ESDET_ARTICULOID,
+                A.ALMACEN_ID,
+                A.ALMACEN_NOMBRE,
+                SU.SUCURSAL_ID,
+                SU.NOMBRE AS SUCURSAL_NOMBRE,
+                AR.NOMBRE AS ARTICULO_NOMBRE,
+                X.CLAVE_ARTICULO
+            FROM AMPAR_HIS_STOCK ST
+            LEFT JOIN AMPAR_HIS_ESDET ED ON ED.ESDET_ID = ST.STOCK_ESDETID
+            LEFT JOIN ARTICULOS AR ON AR.ARTICULO_ID = ED.ESDET_ARTICULOID
+            LEFT JOIN (
+                SELECT CLAVE_ARTICULO, ARTICULO_ID 
+                FROM CLAVES_ARTICULOS 
+                WHERE ROL_CLAVE_ART_ID = 17
+            ) X ON X.ARTICULO_ID = AR.ARTICULO_ID
+            LEFT JOIN AMPAR_HIS_ALMACEN A ON A.ALMACEN_ID = ST.STOCK_ALMACENIDACTUAL
+            LEFT JOIN SUCURSALES SU ON SU.SUCURSAL_ID = A.ALMACEN_SUCURSAL_MS
+            WHERE ST.STOCK_FOLIO = ?
+        """
+        cursor.execute(sql, (folio,))
         row = cursor.fetchone()
         
         if row:
@@ -154,14 +185,14 @@ def actualizar_temp_etiqueta(folio: str, folio_sin_guion: str) -> bool:
 # FUNCIONES DE IMPRESIÓN
 # ============================================================================
 
-def generar_zpl(folio_sin_guion: str, folio_original: str, label_text: str = "") -> str:
+def generar_zpl(folio_sin_guion: str, folio_original: str, registro: dict) -> str:
     """
-    Genera el código ZPL para la etiqueta RFID
+    Genera el código ZPL para la etiqueta RFID 10cm x 5cm
     
     Args:
         folio_sin_guion: El folio sin guión para el RFID
         folio_original: El folio original con guión para el código de barras
-        label_text: Texto adicional para la etiqueta (opcional)
+        registro: Diccionario con todos los datos del registro
     
     Returns:
         Código ZPL formateado
@@ -170,23 +201,62 @@ def generar_zpl(folio_sin_guion: str, folio_original: str, label_text: str = "")
     rfid_hex = folio_sin_guion.encode("ascii").hex().upper()
     rfid_hex = rfid_hex.ljust(24, "0")[:24]
     
+    # Extraer datos del registro (con valores por defecto si no existen)
+    stock_folio = str(registro.get("STOCK_FOLIO", "") or "").strip()[:20]
+    almacen_nombre = str(registro.get("ALMACEN_NOMBRE", "") or "").strip()[:22]
+    sucursal_nombre = str(registro.get("SUCURSAL_NOMBRE", "") or "").strip()[:22]
+    clave_articulo = str(registro.get("CLAVE_ARTICULO", "") or "").strip()[:25]
+    articulo_nombre = str(registro.get("ARTICULO_NOMBRE", "") or "").strip()[:35]
+    lote = str(registro.get("ESDET_LOTE") or registro.get("STOCK_LOTE", "") or "").strip()[:18]
+    caducidad = str(registro.get("ESDET_CADUCIDAD") or registro.get("STOCK_CADUCIDAD", "") or "").strip()[:18]
+    stock_id = registro.get("STOCK_ID", "")
+    
+    # Generar URL para QR con STOCK_ID en base64
+    stock_id_b64 = base64.b64encode(str(stock_id).encode()).decode() if stock_id else ""
+    qr_url = f"{QR_BASE_URL}{stock_id_b64}"
+    
+    # ZPL para etiqueta 10cm x 5cm (800 x 400 dots a 203 DPI)
+    # Formato: STOCK_FOLIO, ALMACEN (SUCURSAL), CLAVE_ARTICULO, ARTICULO_NOMBRE, LOTE, CADUCIDAD
     zpl = f"""
 ^XA
-^PW820
-^LL180
+^PW800
+^LL400
 ^LH0,0
 
 ^RS8,,100,1,E,,,6^FS
-
 ^RFW,H,2,16,1^FD{rfid_hex}^FS
 
-^FO270,40
-^BCN,60,Y,N,N
+^FO20,20
+^A0N,30,30
+^FD{stock_folio}^FS
+
+^FO20,55
+^A0N,26,26
+^FD{almacen_nombre} ({sucursal_nombre})^FS
+
+^FO20,90
+^A0N,24,24
+^FD{clave_articulo}^FS
+
+^FO20,120
+^A0N,22,22
+^FD{articulo_nombre}^FS
+
+^FO20,155
+^A0N,20,20
+^FDLote: {lote}^FS
+
+^FO20,180
+^A0N,20,20
+^FDCad: {caducidad}^FS
+
+^FO20,220
+^BCN,70,Y,N,N
 ^FD{folio_original}^FS
 
-^FO260,120
-^A0N,30,30
-^FD{label_text}^FS
+^FO480,30
+^BQN,2,6
+^FDQA,{qr_url}^FS
 
 ^PQ1
 ^XZ
@@ -208,7 +278,7 @@ def enviar_a_impresora(zpl: str) -> bool:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(10)  # Timeout de 10 segundos
         s.connect((PRINTER_IP, PRINTER_PORT))
-        s.sendall(zpl.encode("ascii"))
+        s.sendall(zpl.encode("latin-1", errors="replace"))
         s.close()
         return True
     except socket.error as e:
@@ -245,7 +315,7 @@ async def imprimir_etiqueta(folio: str) -> PrintResponse:
     actualizar_temp_etiqueta(folio, folio_sin_guion)
     
     # Generar ZPL e imprimir
-    zpl = generar_zpl(folio_sin_guion, folio)
+    zpl = generar_zpl(folio_sin_guion, folio, registro)
     enviado = enviar_a_impresora(zpl)
     
     if enviado:
@@ -301,17 +371,54 @@ async def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/consultar/{folio}")
+async def consultar_folio(folio: str):
+    """
+    Consulta todos los datos disponibles de un folio en la base de datos
+    
+    - **folio**: El folio en formato 'A00219-25'
+    
+    Retorna todos los campos de la tabla AMPAR_HIS_STOCK para ese folio
+    """
+    registro = buscar_folio_en_db(folio)
+    
+    if not registro:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Folio '{folio}' no encontrado en la base de datos"
+        )
+    
+    return {
+        "folio": folio,
+        "datos": registro,
+        "campos_disponibles": list(registro.keys()),
+        "datos_etiqueta": {
+            "ALMACEN_NOMBRE": registro.get("ALMACEN_NOMBRE"),
+            "SUCURSAL_NOMBRE": registro.get("SUCURSAL_NOMBRE"),
+            "CLAVE_ARTICULO": registro.get("CLAVE_ARTICULO"),
+            "ARTICULO_NOMBRE": registro.get("ARTICULO_NOMBRE"),
+            "ESDET_LOTE": registro.get("ESDET_LOTE"),
+            "STOCK_LOTE": registro.get("STOCK_LOTE"),
+            "ESDET_CADUCIDAD": registro.get("ESDET_CADUCIDAD"),
+            "STOCK_CADUCIDAD": registro.get("STOCK_CADUCIDAD"),
+            "ESDET_SERIE": registro.get("ESDET_SERIE"),
+            "STOCK_ID": registro.get("STOCK_ID")
+        }
+    }
+
+
 @app.post("/imprimir", response_model=PrintResponse)
 async def imprimir_un_folio(request: FolioRequest):
     """
-    Imprime una etiqueta RFID para un folio
+    Imprime una etiqueta RFID para un folio (10cm x 5cm)
     
     - **folio**: El folio en formato 'A00219-25'
     
     El proceso:
-    1. Busca el folio en AMPAR_HIS_STOCK
+    1. Busca el folio en AMPAR_HIS_STOCK con JOINs a tablas relacionadas
     2. Actualiza STOCK_TEMPETIQUETA con el folio sin guión
-    3. Imprime la etiqueta con el código RFID y código de barras
+    3. Imprime etiqueta con: Sucursal, Almacén, Clave, Artículo, Lote, Caducidad, Serie
+    4. Incluye código de barras con el folio y QR con enlace al sistema
     """
     resultado = await imprimir_etiqueta(request.folio)
     
@@ -324,7 +431,7 @@ async def imprimir_un_folio(request: FolioRequest):
 @app.post("/imprimir-multiple", response_model=MultiplePrintResponse)
 async def imprimir_multiples_folios(request: MultipleFoliosRequest):
     """
-    Imprime múltiples etiquetas RFID
+    Imprime múltiples etiquetas RFID (10cm x 5cm)
     
     - **folios**: Lista de folios en formato ['A00219-25', 'A00220-25', ...]
     
