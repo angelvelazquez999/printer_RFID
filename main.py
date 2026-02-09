@@ -9,7 +9,7 @@ from typing import List
 from contextlib import asynccontextmanager
 
 from firebird.driver import connect, driver_config
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -344,14 +344,26 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Configurar CORS
+# Configurar CORS - Configuración permisiva para desarrollo
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Permite todos los orígenes (en producción, especifica los dominios)
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"],  # Permite todos los orígenes
+    allow_credentials=False,  # Debe ser False cuando allow_origins es "*"
+    allow_methods=["*"],  # Permite todos los métodos (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Permite todas las cabeceras
+    expose_headers=["*"],  # Expone todas las cabeceras en la respuesta
+    max_age=3600,  # Cache preflight por 1 hora
 )
+
+# Middleware adicional para asegurar headers CORS en todas las respuestas
+@app.middleware("http")
+async def add_cors_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Max-Age"] = "3600"
+    return response
 
 
 @app.get("/")
@@ -363,6 +375,20 @@ async def root():
         "printer_ip": PRINTER_IP,
         "printer_port": PRINTER_PORT
     }
+
+
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """Manejador de preflight requests para CORS"""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
 
 
 @app.get("/health")
@@ -479,4 +505,9 @@ async def imprimir_multiples_folios(request: MultipleFoliosRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8090,
+        log_level="info"
+    )
